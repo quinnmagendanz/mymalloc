@@ -44,30 +44,6 @@
 // The smallest aligned size that will hold a size_t value.
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
-// check - This checks our invariant that the size_t header before every
-// block points to either the beginning of the next block, or the end of the
-// heap.
-int my_check() {
-  char* p;
-  char* lo = (char*)mem_heap_lo();
-  char* hi = (char*)mem_heap_hi() + 1;
-  size_t size = 0;
-
-  p = lo;
-  while (lo <= p && p < hi) {
-    size = ALIGN(*(size_t*)p + SIZE_T_SIZE);
-    p += size;
-  }
-
-  if (p != hi) {
-    printf("Bad headers did not end at heap_hi!\n");
-    printf("heap_lo: %p, heap_hi: %p, size: %lu, p: %p\n", lo, hi, size, p);
-    return -1;
-  }
-
-  return 0;
-}
-
 // init - Initialize the malloc package.  Called once before any other
 // calls are made.  Since this is a very simple implementation, we just
 // return success.
@@ -78,6 +54,95 @@ int my_init() {
 //  malloc - Allocate a block by incrementing the brk pointer.
 //  Always allocate a block whose size is a multiple of the alignment.
 void* my_malloc(size_t size) {
+  int aligned_size = ALIGN(size + SIZE_T_SIZE);
+
+  void* p = mem_sbrk(aligned_size);
+
+  if (p == (void*) - 1) {
+    return NULL;
+  } else {
+    *(size_t*)p = size;
+
+    return (void*)((char*)p + SIZE_T_SIZE);
+  }
+}
+
+// free - Freeing a block does nothing.
+void my_free(void* ptr) {
+}
+
+// realloc - Implemented simply in terms of malloc and free
+void* my_realloc(void* ptr, size_t size) {
+  void* newptr;
+  size_t copy_size;
+
+  newptr = my_malloc(size);
+  if (NULL == newptr) {
+    return NULL;
+  }
+
+  copy_size = *(size_t*)((uint8_t*)ptr - SIZE_T_SIZE);
+  if (size < copy_size) {
+    copy_size = size;
+  }
+  memcpy(newptr, ptr, copy_size);
+
+  my_free(ptr);
+  return newptr;
+}
+
+int my_check() {
+  // size_t header before every block points to either the beginning of the 
+  // next block, or the end of the heap.
+  if (my_check_old() == -1) return -1;
+
+  //Is every block in the free list marked as free?
+  //Are there any contiguous free blocks that could be coalesced?
+  //Is every free block actually in the free list?
+  //Do the pointers in the free list point to valid free blocks?
+  //Do any allocated blocks overlap?
+  //Do the pointers in a heap block point to valid heap addresses?
+
+  return 0;
+}
+
+//---------------------------------Old Functions-------------------------------
+
+// check - This checks our invariant that the size_t header before every
+// block points to either the beginning of the next block, or the end of the
+// heap.
+ int my_check_old() {
+   char* p;
+   char* lo = (char*)mem_heap_lo();
+   char* hi = (char*)mem_heap_hi() + 1;
+   size_t size = 0;
+
+   p = lo;
+   while (lo <= p && p < hi) {
+     size = ALIGN(*(size_t*)p + SIZE_T_SIZE);
+     p += size;
+   }
+
+   if (p != hi) {
+     printf("Bad headers did not end at heap_hi!\n");
+     printf("heap_lo: %p, heap_hi: %p, size: %lu, p: %p\n", lo, hi, size, p);
+     return -1;
+   }
+
+   return 0;
+ }
+
+
+// init - Initialize the malloc package.  Called once before any other
+// calls are made.  Since this is a very simple implementation, we just
+// return success.
+int my_init_old() {
+  return 0;
+}
+
+//  malloc - Allocate a block by incrementing the brk pointer.
+//  Always allocate a block whose size is a multiple of the alignment.
+void* my_malloc_old(size_t size) {
   // We allocate a little bit of extra memory so that we can store the
   // size of the block we've allocated.  Take a look at realloc to see
   // one example of a place where this can come in handy.
@@ -108,11 +173,11 @@ void* my_malloc(size_t size) {
 }
 
 // free - Freeing a block does nothing.
-void my_free(void* ptr) {
+void my_free_old(void* ptr) {
 }
 
 // realloc - Implemented simply in terms of malloc and free
-void* my_realloc(void* ptr, size_t size) {
+void* my_realloc_old(void* ptr, size_t size) {
   void* newptr;
   size_t copy_size;
 
