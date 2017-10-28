@@ -728,6 +728,7 @@ static void printresults(int n, char** tracefiles, stats_t* stats) {
   double total_ops = 0, total_secs = 0, total_log_throughput = 0, total_log_util = 0;
 
   /* Print the individual results for each trace */
+  printf("Malloc Calls: %d\n", getMCount());
   printf("%5s%27s%10s%10s%6s%8s%10s%9s\n",
          "trace", "filename", " valid", "checked", "util", "ops", "secs", "Kops/sec");
   for (i = 0; i < n; i++) {
