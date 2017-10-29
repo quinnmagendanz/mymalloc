@@ -45,7 +45,7 @@
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 #define MAX_LIST 10
-#define MIN_LIST 3
+#define MIN_LIST 4
 #define HEAD_SIZE(i) (size_t)(1 << (MIN_LIST + (i)))
 
 typedef struct FreeNode {
@@ -53,21 +53,26 @@ typedef struct FreeNode {
   size_t size;
 } FreeNode;
 
-int malloc_count;
+int mallocCount;
+int largeMallocCount;
 
 //8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
 FreeNode* freeListHeads[MAX_LIST];
 FreeNode* maxBlocks;
 
 int getMCount(){
-  return malloc_count;
+  return mallocCount;
+}
+int getLCount(){
+  return largeMallocCount;
 }
 
 // init - Initialize the malloc package.  Called once before any other
 // calls are made.  Since this is a very simple implementation, we just
 // return success.
 int my_init() {
-  malloc_count = 0;
+  mallocCount = 0;
+  largeMallocCount = 0;
   for (int i = 0; i < MAX_LIST; i++) {
     freeListHeads[i] = NULL;
   }
@@ -79,12 +84,14 @@ void* my_malloc_old(size_t size);
 //  malloc - Allocate a block by incrementing the brk pointer.
 //  Always allocate a block whose size is a multiple of the alignment.
 void* my_malloc(size_t size) {
-  malloc_count++;
+  mallocCount++;
   int alignedSize = ALIGN(size + SIZE_T_SIZE);
 
+  // if size fits in a freelist, grab block
   int i = 0;
   while (i < MAX_LIST) {
-    if (alignedSize < HEAD_SIZE(i)) {
+    size_t headSize = HEAD_SIZE(i);
+    if (alignedSize < headSize) {
       FreeNode* head = freeListHeads[i];
       if (head == NULL) {
         void* a = my_malloc_old(HEAD_SIZE(i));
@@ -92,13 +99,15 @@ void* my_malloc(size_t size) {
 	      return a;
       }
       freeListHeads[i] = head->next;
-      *(size_t*)((char*)head - SIZE_T_SIZE) = HEAD_SIZE(i);
+      *(size_t*)((char*)head - SIZE_T_SIZE) = headSize;
       assert(*(size_t*)((char*)head - SIZE_T_SIZE) > size);
       return head;
     }
     i++;
   }
-
+  // store larger memory in linked list
+  // TODO(magendanz) potentially get rid of this and store all in array of freelists
+  largeMallocCount++;
   FreeNode* curNode = maxBlocks;
   FreeNode* prevNode = NULL;
   while (curNode != NULL) {
@@ -124,9 +133,11 @@ void* my_malloc(size_t size) {
 void my_free(void* ptr) {
   size_t size = *(size_t*)((char*)ptr - SIZE_T_SIZE);
   FreeNode* newNode = (FreeNode*)ptr;
+
+  // stick into freelist
   int i = 0;
   while (i < MAX_LIST) {
-    if (size < HEAD_SIZE(i)) {
+    if (size <= HEAD_SIZE(i)) {
       newNode->next = freeListHeads[i];
       freeListHeads[i] = newNode;
       return;
