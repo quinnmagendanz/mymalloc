@@ -88,8 +88,8 @@ void* my_malloc(size_t size) {
       FreeNode* head = freeListHeads[i];
       if (head == NULL) {
         void* a = my_malloc_old(HEAD_SIZE(i));
-	assert(*(size_t*)((char*)a - SIZE_T_SIZE) > size);
-	return a;
+	      assert(*(size_t*)((char*)a - SIZE_T_SIZE) > size);
+	      return a;
       }
       freeListHeads[i] = head->next;
       *(size_t*)((char*)head - SIZE_T_SIZE) = HEAD_SIZE(i);
@@ -104,9 +104,9 @@ void* my_malloc(size_t size) {
   while (curNode != NULL) {
     if (curNode->size >= alignedSize) {
       if (prevNode != NULL) {
-	prevNode->next = curNode->next;
+	      prevNode->next = curNode->next;
       } else {
-	maxBlocks = curNode->next;
+	      maxBlocks = curNode->next;
       }
       *((char*)curNode - SIZE_T_SIZE) = curNode->size;
       assert(*(size_t*)((char*)curNode - SIZE_T_SIZE) > size);
