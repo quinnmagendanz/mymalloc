@@ -219,10 +219,11 @@ int eval_mm_valid(const malloc_impl_t* impl, trace_t* trace, int tracenum) {
 
 //------------------------------START OUR CODE--------------------------------
 
-      if (*((uint64_t*)newp) == (uint64_t)oldp) {
+      if (*((uint64_t*)newp) != (uint64_t)oldp) {
 	printf("\nNot Valid: Realloc Data Not Preserved\n");
 	return 0;
       }
+      *((uint64_t*)newp) = (uint64_t)newp;
 
 //------------------------------END OUR CODE----------------------------------
       // Remember region

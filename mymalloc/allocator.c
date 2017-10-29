@@ -45,7 +45,7 @@
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
 #define MAX_LIST 10
-#define MIN_LIST 3
+#define MIN_LIST 4
 #define HEAD_SIZE(i) (size_t)(1 << (MIN_LIST + (i)))
 
 typedef struct FreeNode {
@@ -87,23 +87,26 @@ void* my_malloc(size_t size) {
   mallocCount++;
   int alignedSize = ALIGN(size + SIZE_T_SIZE);
 
+  // if size fits in a freelist, grab block
   int i = 0;
   while (i < MAX_LIST) {
-    if (alignedSize < HEAD_SIZE(i)) {
+    size_t headSize = HEAD_SIZE(i);
+    if (alignedSize < headSize) {
       FreeNode* head = freeListHeads[i];
       if (head == NULL) {
-        void* a = my_malloc_old(HEAD_SIZE(i));
+        void* a = my_malloc_old(headSize);
 	assert(*(size_t*)((char*)a - SIZE_T_SIZE) > size);
 	return a;
       }
       freeListHeads[i] = head->next;
-      *(size_t*)((char*)head - SIZE_T_SIZE) = HEAD_SIZE(i);
+      *(size_t*)((char*)head - SIZE_T_SIZE) = headSize;
       assert(*(size_t*)((char*)head - SIZE_T_SIZE) > size);
       return head;
     }
     i++;
   }
-
+  // store larger memory in linked list
+  // TODO(magendanz) potentially get rid of this and store all in array of freelists
   largeMallocCount++;
   FreeNode* curNode = maxBlocks;
   FreeNode* prevNode = NULL;
@@ -130,6 +133,8 @@ void* my_malloc(size_t size) {
 void my_free(void* ptr) {
   size_t size = *(size_t*)((char*)ptr - SIZE_T_SIZE);
   FreeNode* newNode = (FreeNode*)ptr;
+
+  // stick into freelist
   int i = 0;
   while (i < MAX_LIST) {
     if (size <= HEAD_SIZE(i)) {
