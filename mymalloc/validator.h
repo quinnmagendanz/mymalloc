@@ -218,7 +218,7 @@ int eval_mm_valid(const malloc_impl_t* impl, trace_t* trace, int tracenum) {
 //------------------------------START OUR CODE--------------------------------
 
       if (*((uint64_t*)newp) == (uint64_t)oldp) {
-	return 0;
+        return 0;
       }
 
 //------------------------------END OUR CODE----------------------------------
