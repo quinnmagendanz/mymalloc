@@ -53,21 +53,26 @@ typedef struct FreeNode {
   size_t size;
 } FreeNode;
 
-int malloc_count;
+int mallocCount;
+int largeMallocCount;
 
 //8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
 FreeNode* freeListHeads[MAX_LIST];
 FreeNode* maxBlocks;
 
 int getMCount(){
-  return malloc_count;
+  return mallocCount;
+}
+int getLCount(){
+  return largeMallocCount;
 }
 
 // init - Initialize the malloc package.  Called once before any other
 // calls are made.  Since this is a very simple implementation, we just
 // return success.
 int my_init() {
-  malloc_count = 0;
+  mallocCount = 0;
+  largeMallocCount = 0;
   for (int i = 0; i < MAX_LIST; i++) {
     freeListHeads[i] = NULL;
   }
@@ -79,7 +84,7 @@ void* my_malloc_old(size_t size);
 //  malloc - Allocate a block by incrementing the brk pointer.
 //  Always allocate a block whose size is a multiple of the alignment.
 void* my_malloc(size_t size) {
-  malloc_count++;
+  mallocCount++;
   int alignedSize = ALIGN(size + SIZE_T_SIZE);
 
   int i = 0;
@@ -99,6 +104,7 @@ void* my_malloc(size_t size) {
     i++;
   }
 
+  largeMallocCount++;
   FreeNode* curNode = maxBlocks;
   FreeNode* prevNode = NULL;
   while (curNode != NULL) {
@@ -126,7 +132,7 @@ void my_free(void* ptr) {
   FreeNode* newNode = (FreeNode*)ptr;
   int i = 0;
   while (i < MAX_LIST) {
-    if (size < HEAD_SIZE(i)) {
+    if (size <= HEAD_SIZE(i)) {
       newNode->next = freeListHeads[i];
       freeListHeads[i] = newNode;
       return;
