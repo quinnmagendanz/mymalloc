@@ -63,6 +63,7 @@ static int add_range(const malloc_impl_t* impl, range_t** ranges, char* lo,
 
   // Payload addresses must be R_ALIGNMENT-byte aligned
   if (!IS_ALIGNED(lo)) {
+    printf("\nNot Valid: Misaligned\n");
     return 0;
   }
 
@@ -72,12 +73,13 @@ static int add_range(const malloc_impl_t* impl, range_t** ranges, char* lo,
   // The payload must not overlap any other payloads
   range_t* curNode = *ranges;
   range_t* prevNode = NULL;
-  while (curNode != NULL || curNode->hi > p->hi) {
+  while (curNode != NULL && curNode->hi > p->hi) {
     prevNode = curNode;
-    curNode = curNode->next
+    curNode = curNode->next;
   }
   if (prevNode != NULL) {
-    if (prevNode->lo <= p->hi || curNode->hi >= p->lo) {
+    if (prevNode->lo <= p->hi || (curNode != NULL && curNode->hi >= p->lo)) {
+      printf("\nNot Valid: Overlapping Blocks\n");
       return 0;
     }
     prevNode->next = p;
@@ -114,7 +116,7 @@ static void remove_range(range_t** ranges, char* lo) {
     curNode = curNode->next;
   }
   if (prevNode == NULL) {
-    free(ranges*);
+    free(*ranges);
     *ranges = NULL;
   } else if (curNode != NULL) {
     prevNode->next = curNode->next;
@@ -218,7 +220,8 @@ int eval_mm_valid(const malloc_impl_t* impl, trace_t* trace, int tracenum) {
 //------------------------------START OUR CODE--------------------------------
 
       if (*((uint64_t*)newp) == (uint64_t)oldp) {
-        return 0;
+      	printf("\nNot Valid: Realloc Data Not Preserved\n");
+      	return 0;
       }
 
 //------------------------------END OUR CODE----------------------------------
