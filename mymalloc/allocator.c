@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "./allocator_interface.h"
 #include "./memlib.h"
 
@@ -44,21 +45,26 @@
 // The smallest aligned size that will hold a size_t value.
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
-#define MAX_LIST 10
+// Assumes no malloc larger than 2^20
+#define MAX_LIST 16
 #define MIN_LIST 4
 #define HEAD_SIZE(i) (size_t)(1 << (MIN_LIST + (i)))
+#define MARK_SIZE(p, size) *(size_t*)((char*)p - SIZE_T_SIZE) = size
+#define GET_SIZE(p) *(size_t*)((char*)p - SIZE_T_SIZE)
 
 typedef struct FreeNode {
   struct FreeNode* next;
+  struct FreeNode* prev;
   size_t size;
 } FreeNode;
 
 int mallocCount;
 int largeMallocCount;
+void* prevRequest;
+char prevRequestFree;
 
 //8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096
 FreeNode* freeListHeads[MAX_LIST];
-FreeNode* maxBlocks;
 
 int getMCount(){
   return mallocCount;
@@ -73,16 +79,67 @@ int getLCount(){
 int my_init() {
   mallocCount = 0;
   largeMallocCount = 0;
+  prevRequest = NULL;
+  prevRequestFree = 0;
   for (int i = 0; i < MAX_LIST; i++) {
     freeListHeads[i] = NULL;
   }
-  maxBlocks = NULL;
   return 0;
 }
 
-void* my_malloc_old(size_t size);
+void* my_malloc_get_mem(size_t size) {
+  // if most recent heap allocation is free, use it
+  if (prevRequestFree) {
+    prevRequestFree = 0;
+    FreeNode* node = (FreeNode*)prevRequest;
+    //remove prevRequest from free list
+    if (node->next != NULL) {
+      node->next->prev = node->prev;
+    }
+    if (node->prev != NULL) {
+      node->prev->next = node->next;
+    } else {
+      int index = log2(node->size) - MIN_LIST; //TODO(magendanz) can be faster
+      freeListHeads[index] = node->next;
+    }
+
+    int memNeeded = size - node->size;
+    if (memNeeded <= 0) {
+      return (void*)node;
+    } else {
+      // find out how much additional memory to allocate while maintaining a power of 2 block size
+      size_t v = memNeeded/node->size;
+      v--;
+      v |= v >> 1;
+      v |= v >> 2;
+      v |= v >> 4;
+      v |= v >> 8;
+      v |= v >> 16;
+      v |= v >> 32;
+      v++;
+      mem_sbrk((v-1)*node->size);
+      MARK_SIZE(prevRequest, v*node->size);
+      printf("Heap Reuse: %d(requested), %d(old), %d(new)\n", size, node->size, v*node->size);
+      return (void*)node;
+    }
+  }
+
+  int aligned_size = ALIGN(size + SIZE_T_SIZE);
+  void* p = mem_sbrk(aligned_size);
+  if (p == (void*) - 1) {
+    return NULL;
+  } else {
+    *(size_t*)p = size;
+    void* newptr = (void*)((char*)p + SIZE_T_SIZE);
+    prevRequest = newptr;
+    prevRequestFree = 0;
+    return newptr;
+  }
+}
+
 //  malloc - Allocate a block by incrementing the brk pointer.
 //  Always allocate a block whose size is a multiple of the alignment.
+// Precondition: No memory allocations larger than 2^20
 void* my_malloc(size_t size) {
   mallocCount++;
   int alignedSize = ALIGN(size + SIZE_T_SIZE);
@@ -91,69 +148,65 @@ void* my_malloc(size_t size) {
   int i = 0;
   while (i < MAX_LIST) {
     size_t headSize = HEAD_SIZE(i);
-    if (alignedSize < headSize) {
+    if (size <= headSize) {
       FreeNode* head = freeListHeads[i];
       if (head == NULL) {
-        void* a = my_malloc_old(HEAD_SIZE(i));
-	      assert(*(size_t*)((char*)a - SIZE_T_SIZE) > size);
-	      return a;
+        void* a = my_malloc_get_mem(headSize);
+	assert(GET_SIZE(a) >= size);
+	return a;
       }
       freeListHeads[i] = head->next;
-      *(size_t*)((char*)head - SIZE_T_SIZE) = headSize;
-      assert(*(size_t*)((char*)head - SIZE_T_SIZE) > size);
+      if (freeListHeads[i] != NULL) {
+	freeListHeads[i]->prev = NULL;
+      }
+      MARK_SIZE(head, headSize);
+      assert(GET_SIZE(head) >= size);
+      if (head == prevRequest) {
+	prevRequestFree = 0;
+      }
       return head;
     }
     i++;
   }
-  // store larger memory in linked list
-  // TODO(magendanz) potentially get rid of this and store all in array of freelists
-  largeMallocCount++;
-  FreeNode* curNode = maxBlocks;
-  FreeNode* prevNode = NULL;
-  while (curNode != NULL) {
-    if (curNode->size >= alignedSize) {
-      if (prevNode != NULL) {
-	      prevNode->next = curNode->next;
-      } else {
-	      maxBlocks = curNode->next;
-      }
-      *((char*)curNode - SIZE_T_SIZE) = curNode->size;
-      assert(*(size_t*)((char*)curNode - SIZE_T_SIZE) > size);
-      return curNode;
-    }
-    prevNode = curNode;
-    curNode = curNode->next;
-  }
-  void* a = my_malloc_old(size);
-  assert(*(size_t*)((char*)a - SIZE_T_SIZE) >= size);
-  return a;
+  return NULL;
 }
 
 // free - Freeing a block does nothing.
 void my_free(void* ptr) {
-  size_t size = *(size_t*)((char*)ptr - SIZE_T_SIZE);
+  size_t size = GET_SIZE(ptr);
   FreeNode* newNode = (FreeNode*)ptr;
 
   // stick into freelist
   int i = 0;
   while (i < MAX_LIST) {
-    if (size <= HEAD_SIZE(i)) {
+    size_t headSize = HEAD_SIZE(i);
+    if (size <= headSize) {
+      if (freeListHeads[i] != NULL) {
+	freeListHeads[i]->prev = newNode;
+      }
       newNode->next = freeListHeads[i];
+      newNode->prev = NULL;
+      newNode->size = headSize;
       freeListHeads[i] = newNode;
+      if (prevRequest == ptr) {
+	prevRequestFree = 1;
+      }
       return;
     }
     i++;
   }
-
-  newNode->size = size;
-  newNode->next = maxBlocks;
-  maxBlocks = newNode;
 }
 
 // realloc - Implemented simply in terms of malloc and free
 void* my_realloc(void* ptr, size_t size) {
   void* newptr;
   size_t copy_size;
+  
+  // if current memory block fits the size change, do nothing
+  // TODO(magendanz) not space efficient if size dramatically shrinking
+  if (size <= GET_SIZE(ptr)) {
+    return ptr;
+  }
 
   newptr = my_malloc(size);
   if (NULL == newptr) {
