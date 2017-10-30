@@ -48,6 +48,7 @@
 // Assumes no malloc larger than 2^20
 #define MAX_LIST 16
 #define MIN_LIST 4
+#define THRESHOLD .75
 #define HEAD_SIZE(i) (size_t)(1 << (MIN_LIST + (i)))
 #define MARK_SIZE(p, size) *(size_t*)((char*)p - SIZE_T_SIZE) = size
 #define GET_SIZE(p) *(size_t*)((char*)p - SIZE_T_SIZE)
@@ -59,7 +60,6 @@ typedef struct FreeNode {
 } FreeNode;
 
 int mallocCount;
-int largeMallocCount;
 void* prevRequest;
 char prevRequestFree;
 
@@ -69,16 +69,12 @@ FreeNode* freeListHeads[MAX_LIST];
 int getMCount(){
   return mallocCount;
 }
-int getLCount(){
-  return largeMallocCount;
-}
 
 // init - Initialize the malloc package.  Called once before any other
 // calls are made.  Since this is a very simple implementation, we just
 // return success.
 int my_init() {
   mallocCount = 0;
-  largeMallocCount = 0;
   prevRequest = NULL;
   prevRequestFree = 0;
   for (int i = 0; i < MAX_LIST; i++) {
@@ -90,37 +86,30 @@ int my_init() {
 void* my_malloc_get_mem(size_t size) {
   // if most recent heap allocation is free, use it
   if (prevRequestFree) {
-    prevRequestFree = 0;
     FreeNode* node = (FreeNode*)prevRequest;
-    //remove prevRequest from free list
-    if (node->next != NULL) {
-      node->next->prev = node->prev;
-    }
-    if (node->prev != NULL) {
-      node->prev->next = node->next;
-    } else {
-      int index = log2(node->size) - MIN_LIST; //TODO(magendanz) can be faster
-      freeListHeads[index] = node->next;
-    }
+    int memNeeded = (int)size - (int)node->size;
+    // only reuse if close to size already
+    if (abs(memNeeded) <= size*THRESHOLD) {
+      prevRequestFree = 0;
+      //remove prevRequest from free list
+      if (node->next != NULL) {
+	node->next->prev = node->prev;
+      }
+      if (node->prev != NULL) {
+	node->prev->next = node->next;
+      } else {
+	int index = log2(node->size) - MIN_LIST; //TODO(magendanz) can be faster
+	freeListHeads[index] = node->next;
+      }
 
-    int memNeeded = size - node->size;
-    if (memNeeded <= 0) {
-      return (void*)node;
-    } else {
-      // find out how much additional memory to allocate while maintaining a power of 2 block size
-      size_t v = memNeeded/node->size;
-      v--;
-      v |= v >> 1;
-      v |= v >> 2;
-      v |= v >> 4;
-      v |= v >> 8;
-      v |= v >> 16;
-      v |= v >> 32;
-      v++;
-      mem_sbrk((v-1)*node->size);
-      MARK_SIZE(prevRequest, v*node->size);
-      printf("Heap Reuse: %d(requested), %d(old), %d(new)\n", size, node->size, v*node->size);
-      return (void*)node;
+      if (memNeeded <= 0) {
+	return (void*)node;
+      } else {
+	mem_sbrk(memNeeded);
+	MARK_SIZE(prevRequest, size);
+	printf("Heap Reuse: %d(requested), %d(old)\n", size, node->size);
+	return (void*)node;
+      }
     }
   }
 
@@ -133,6 +122,7 @@ void* my_malloc_get_mem(size_t size) {
     void* newptr = (void*)((char*)p + SIZE_T_SIZE);
     prevRequest = newptr;
     prevRequestFree = 0;
+    //printf("New Malloc: %d(requested)\n", size);
     return newptr;
   }
 }
@@ -142,7 +132,6 @@ void* my_malloc_get_mem(size_t size) {
 // Precondition: No memory allocations larger than 2^20
 void* my_malloc(size_t size) {
   mallocCount++;
-  int alignedSize = ALIGN(size + SIZE_T_SIZE);
 
   // if size fits in a freelist, grab block
   int i = 0;
@@ -200,11 +189,27 @@ void my_free(void* ptr) {
 // realloc - Implemented simply in terms of malloc and free
 void* my_realloc(void* ptr, size_t size) {
   void* newptr;
-  size_t copy_size;
+  size_t copy_size = GET_SIZE(ptr);
   
   // if current memory block fits the size change, do nothing
   // TODO(magendanz) not space efficient if size dramatically shrinking
-  if (size <= GET_SIZE(ptr)) {
+  if (size <= copy_size) {
+    return ptr;
+  }
+  // if current memory block was most recently allocated, allocate extra 
+  // space needed and return same block
+  if (ptr == prevRequest) {
+    size_t v = size;
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v |= v >> 32;
+    v++;
+    mem_sbrk(v - copy_size);
+    MARK_SIZE(ptr, v);
     return ptr;
   }
 
@@ -213,7 +218,6 @@ void* my_realloc(void* ptr, size_t size) {
     return NULL;
   }
 
-  copy_size = *(size_t*)((uint8_t*)ptr - SIZE_T_SIZE);
   if (size < copy_size) {
     copy_size = size;
   }
