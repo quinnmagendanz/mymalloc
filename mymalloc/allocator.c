@@ -107,19 +107,9 @@ void* my_malloc_get_mem(size_t size) {
     if (memNeeded <= 0) {
       return (void*)node;
     } else {
-      // find out how much additional memory to allocate while maintaining a power of 2 block size
-      size_t v = memNeeded/node->size;
-      v--;
-      v |= v >> 1;
-      v |= v >> 2;
-      v |= v >> 4;
-      v |= v >> 8;
-      v |= v >> 16;
-      v |= v >> 32;
-      v++;
-      mem_sbrk((v-1)*node->size);
-      MARK_SIZE(prevRequest, v*node->size);
-      printf("Heap Reuse: %d(requested), %d(old), %d(new)\n", size, node->size, v*node->size);
+      mem_sbrk(memNeeded);
+      MARK_SIZE(prevRequest, size);
+      printf("Heap Reuse: %d(requested), %d(old)\n", size, node->size);
       return (void*)node;
     }
   }
@@ -142,7 +132,6 @@ void* my_malloc_get_mem(size_t size) {
 // Precondition: No memory allocations larger than 2^20
 void* my_malloc(size_t size) {
   mallocCount++;
-  int alignedSize = ALIGN(size + SIZE_T_SIZE);
 
   // if size fits in a freelist, grab block
   int i = 0;
