@@ -48,10 +48,11 @@
 #define FREE_MARK_OFFSET (HEADER_SIZE - sizeof(size_t) - sizeof(uint64_t))
 
 // Assumes no malloc larger than 2^20
-#define MAX_LIST 16
-#define MIN_LIST 4
+#define MAX_LIST 31
+#define MIN_LIST 3
 #define THRESHOLD .25
-#define HEAD_SIZE(i) (size_t)(1 << (MIN_LIST + (i)))
+#define HEAD_SIZE(i) (size_t)((2 + (i & 1)) << (MIN_LIST + (i >> 1)))
+#define HEAD_INDEX(size) (int)(2*log2(size) - 2*(MIN_LIST+1));
 #define MARK_SIZE(p, size) *(size_t*)((char*)p - HEADER_SIZE) = size
 #define GET_SIZE(p) *(size_t*)((char*)p - HEADER_SIZE)
 #define MARK_PREV(p, prev_p) *((uint64_t*)((char*)p - PREV_POINTER_OFFSET)) = (uint64_t)prev_p
@@ -75,7 +76,7 @@ void* manPtr;
 void* nextPtr;
 int memAvail;
 
-//8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096...
+//16,24,32,48,64,96,128...
 FreeNode* freeListHeads[MAX_LIST];
 int freeListHeadsCount[MAX_LIST];
 int freeListHeadsReq[MAX_LIST];
@@ -117,7 +118,7 @@ void remove_free_node(FreeNode* node) {
   if (node->prev != NULL) {
     node->prev->next = node->next;
   } else {
-    int index = log2(node->size) - MIN_LIST; //TODO(magendanz) can be faster
+    int index = HEAD_INDEX(node->size);
     freeListHeads[index] = node->next;
   }
 }
@@ -136,9 +137,6 @@ void* my_malloc_get_mem(size_t size) {
       MARK_SIZE(newptr, size);
       MARK_PREV(newptr, manPtr);
       MARK_FREE(newptr, 0);
-      if ((uint64_t)newptr == 140737292787992){
-	assert(newptr != 0);
-      }
       prevRequest = newptr;
       prevRequestFree = 0;
       manPtr = prevRequest;
@@ -220,10 +218,6 @@ void* my_malloc(size_t size) {
 // free and add to free nodes
 void my_free(void* ptr) {
   MARK_FREE(ptr, 1);
-  if ((uint64_t)ptr == 140737292722432){
-    assert(ptr != 0);
-  }
-
   if (ptr != manPtr) {
     // stick into freelist
     size_t size = GET_SIZE(ptr);
@@ -238,9 +232,6 @@ void my_free(void* ptr) {
 	newNode->next = freeListHeads[i];
 	newNode->prev = NULL;
 	newNode->size = headSize;
-	if ((uint64_t)ptr == 140737292722432){
-	  assert(ptr != 0);
-	}
 	freeListHeads[i] = newNode;
 	freeListHeadsCount[i]++;
 	if (prevRequest == ptr) {
@@ -255,24 +246,13 @@ void my_free(void* ptr) {
   // move manPtr to lowest free location on heap
   if (GET_FREE(manPtr)) {
     nextPtr = GET_PREV(manPtr);
-    if ((uint64_t)ptr == 140737292787992){
-      assert(ptr != 0);
-    }
     while (nextPtr != NULL && GET_FREE(nextPtr)) {
-      if ((uint64_t)ptr == 140737292787992){
-	assert(ptr != 0);
-      }
       remove_free_node((FreeNode*)nextPtr);
       manPtr = nextPtr;
       nextPtr = GET_PREV(manPtr);
     }
     memAvail = (uint64_t)heapPtr - (uint64_t)manPtr;
     //printf("New manPtr: %lu\n", (uint64_t)manPtr);
-  }
-  if ((uint64_t)manPtr == 140737292312616) {
-    for (int i = 0; i < MAX_LIST; i++) {
-      assert(freeListHeads[i] == NULL);
-    }
   }
 }
 
