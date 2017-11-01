@@ -80,7 +80,7 @@ static int add_range(const malloc_impl_t* impl, range_t** ranges, char* lo,
   if (prevNode != NULL) {
     if (prevNode->lo <= p->hi || (curNode != NULL && curNode->hi >= p->lo)) {
       printf("\nNot Valid: Overlapping Blocks\n");
-      printf("PrevNode Low: %lu, CurNode: (%lu, %lu), NextNode Hi: %lu", prevNode->lo, p->hi, p->lo, curNode->hi);
+      printf("PrevHi: %lu, CurNode: (%lu, %lu), NextLo: %lu", curNode->hi, p->lo, p->hi, prevNode->lo);
       return 0;
     }
     prevNode->next = p;
