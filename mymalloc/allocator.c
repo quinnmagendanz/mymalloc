@@ -42,7 +42,6 @@ typedef struct Header {
 typedef struct FreeNode {
   struct FreeNode* next;
   struct FreeNode* prev;
-  size_t size;
 } FreeNode;
 
 // All blocks must have a specified minimum alignment.
@@ -60,7 +59,7 @@ typedef struct FreeNode {
 // Assumes no malloc larger than 2^20
 #define MAX_LIST 31
 #define MIN_LIST 3
-#define THRESHOLD .25
+#define THRESHOLD 256
 #define HEAD_SIZE(i) (size_t)((2 + (i & 1)) << (MIN_LIST + (i >> 1)))
 #define HEAD_INDEX(size) (int)(2*log2(size) - 2*(MIN_LIST+1));
 #define GET_HEADER(p) (Header*)((char*)p - HEADER_SIZE)
@@ -69,7 +68,7 @@ typedef struct FreeNode {
 
 int mallocCount;
 void* prevRequest;
-char prevRequestFree;
+char manInList;
 void* heapPtr;
 void* manPtr;
 void* nextPtr;
@@ -96,7 +95,7 @@ void printMemBlocks(){
 int my_init() {
   mallocCount = 0;
   prevRequest = NULL;
-  prevRequestFree = 0;
+  manInList = 0;
   heapPtr = NULL;
   manPtr = NULL;
   nextPtr = NULL;
@@ -117,9 +116,27 @@ void remove_free_node(FreeNode* node) {
   if (node->prev != NULL) {
     node->prev->next = node->next;
   } else {
-    int index = HEAD_INDEX(node->size);
+    Header* header = GET_HEADER(node);
+    int index = HEAD_INDEX(header->size);
     freeListHeads[index] = node->next;
   }
+}
+
+void add_free_node(FreeNode* node, int i) {
+  if (freeListHeads[i] != NULL) {
+    freeListHeads[i]->prev = node;
+  }
+  node->next = freeListHeads[i];
+  node->prev = NULL;
+  freeListHeads[i] = node;
+  freeListHeadsCount[i]++;
+}
+
+void set_header(void* p, size_t size, void* prevP, char free) {
+  Header* header = GET_HEADER(p);
+  header->size =  size;
+  header->prev =  prevP;
+  header->free = free;
 }
 
 void* my_malloc_get_mem(size_t size) {
@@ -127,22 +144,19 @@ void* my_malloc_get_mem(size_t size) {
   if (memAvail <= 0) {
     // no available memory; request entire memory block
     mallocCount++;
-    int aligned_size = ALIGN(size + HEADER_SIZE);
-    void* p = mem_sbrk(aligned_size);
+    int alignedSize = ALIGN(size + HEADER_SIZE);
+    void* p = mem_sbrk(alignedSize);
     if (p == (void*) - 1) {
       return NULL;
     } else {
-      void* newptr = (void*)((char*)p + HEADER_SIZE);
-      Header* header = GET_HEADER(newptr);
-      header->size =  size;
-      header->prev =  manPtr;
-      header->free = 0;
-      prevRequest = newptr;
-      prevRequestFree = 0;
+      void* newPtr = (void*)((char*)p + HEADER_SIZE);
+      set_header(newPtr, size, manPtr, 0);
+      prevRequest = newPtr;
       manPtr = prevRequest;
+      manInList = 0;
       heapPtr = (void*)((char*)prevRequest + size);
-      //printf("New Malloc: %lu(ptr), %d(requested)\n", (uint64_t)newptr, size);
-      return newptr;
+      //printf("New Malloc: %lu(ptr), %d(requested)\n", (uint64_t)newPtr, size);
+      return newPtr;
     }
   } else if ((int) size - memAvail >= 0) {
     // allocate enough space to complete block if worth it
@@ -153,27 +167,23 @@ void* my_malloc_get_mem(size_t size) {
       return NULL;
     }
     Header* header = GET_HEADER(manPtr);
-    header->size =  size;
-    header->free = 0;
+    set_header(manPtr, size, header->prev, 0);
     prevRequest = manPtr;
-    prevRequestFree = 0;
+    manInList = 0;
     heapPtr = manPtr + size;
     return manPtr;
   } else {
     // use some of the available memory
     Header* header = GET_HEADER(manPtr);
-    header->size = size;
-    header->free = 0;
+    set_header(manPtr, size, header->prev, 0);
     //printf("Heap Reuse: %lu(ptr), %d(requested), %d(available)\n", (uint64_t)manPtr, size, memAvail);
     void* newPtr = manPtr;
     void* newManPtr = (void*)((char*)manPtr + size + HEADER_SIZE);
     memAvail = (uint64_t)heapPtr - (uint64_t)newManPtr;
+    manInList = 0;
     if (memAvail > 0) {
       manPtr = newManPtr;
-      Header* newHeader = GET_HEADER(manPtr);
-      newHeader->size =  NULL;
-      newHeader->prev =  newPtr;
-      newHeader->free = 1;
+      set_header(manPtr, NULL, newPtr, 1);
     }
     return newPtr;
   }
@@ -200,12 +210,12 @@ void* my_malloc(size_t size) {
       if (freeListHeads[i] != NULL) {
 	freeListHeads[i]->prev = NULL;
       }
-      if (head == prevRequest) {
-	prevRequestFree = 0;
-      }
       Header* header = GET_HEADER(head);
       header->free = 0;
       freeListHeadsReq[i]++;
+      if ((uint64_t)head > (uint64_t)manPtr){
+	continue;
+      }
       //printf("Node Used: %lu(ptr), %d(size)\n", (uint64_t)head, header->size);
       return head;
     }
@@ -219,44 +229,45 @@ void my_free(void* ptr) {
   Header* header = GET_HEADER(ptr);
   //printf("Free: %lu(ptr), %d(freed)\n", (uint64_t)ptr, header->size);
   header->free = 1;
-  if (ptr != manPtr) {
-    // stick into freelist
-    size_t size = header->size;
-    FreeNode* newNode = (FreeNode*)ptr;
-    int i = 0;
-    while (i < MAX_LIST) {
-      size_t headSize = HEAD_SIZE(i);
-      if (size <= headSize) {
-	if (freeListHeads[i] != NULL) {
-	  freeListHeads[i]->prev = newNode;
-	}
-	newNode->next = freeListHeads[i];
-	newNode->prev = NULL;
-	newNode->size = headSize;
-	freeListHeads[i] = newNode;
-	freeListHeadsCount[i]++;
-	if (prevRequest == ptr) {
-	  prevRequestFree = 1;
-	}
-	break;
+  // stick into freelist
+  size_t size = header->size;
+  FreeNode* newNode = (FreeNode*)ptr;
+  int i = 0;
+  while (i < MAX_LIST) {
+    size_t headSize = HEAD_SIZE(i);
+    if (size <= headSize) {
+      if (freeListHeads[i] != NULL) {
+	freeListHeads[i]->prev = newNode;
       }
-      i++;
+      add_free_node(newNode, i);
+      break;
     }
+    i++;
+  }
+  if (ptr == manPtr) {
+    manInList = 1;
   }
 
   // move manPtr to lowest free location on heap
   Header* manHeader = GET_HEADER(manPtr);
-  if (manHeader->free) {
-    nextPtr = manHeader->prev;
-    Header* nextHeader = GET_HEADER(nextPtr);
-    while (nextPtr != NULL && nextHeader->free) {
-      remove_free_node((FreeNode*)nextPtr);
-      manPtr = nextPtr;
-      nextPtr = nextHeader->prev;
-      nextHeader = GET_HEADER(nextPtr);
+  if (manHeader->free && manHeader->prev != NULL) {
+    Header* subManHeader = GET_HEADER(manHeader->prev);
+    if (subManHeader->free) {
+      if (manPtr == prevRequest && manInList) {
+	remove_free_node(manPtr);
+	manInList = 0;
+      }
+      nextPtr = manHeader->prev;
+      Header* nextHeader = GET_HEADER(nextPtr);
+      while (nextPtr != NULL && nextHeader->free) {
+	remove_free_node(nextPtr);
+	manPtr = nextPtr;
+	nextPtr = nextHeader->prev;
+	nextHeader = GET_HEADER(nextPtr);
+      }
+      memAvail = (uint64_t)heapPtr - (uint64_t)manPtr;
+      //printf("New manPtr: %lu\n", (uint64_t)manPtr);
     }
-    memAvail = (uint64_t)heapPtr - (uint64_t)manPtr;
-    //printf("New manPtr: %lu\n", (uint64_t)manPtr);
   }
 }
 
