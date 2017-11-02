@@ -135,9 +135,6 @@ void* my_malloc_get_mem(size_t size) {
       void* newptr = (void*)((char*)p + HEADER_SIZE);
       Header* header = GET_HEADER(newptr);
       header->size =  size;
-      if ((uint64_t)newptr == 140737292852400){
-	assert(manPtr != 0);
-      }
       header->prev =  manPtr;
       header->free = 0;
       prevRequest = newptr;
@@ -145,7 +142,6 @@ void* my_malloc_get_mem(size_t size) {
       manPtr = prevRequest;
       heapPtr = (void*)((char*)prevRequest + size);
       //printf("New Malloc: %lu(ptr), %d(requested)\n", (uint64_t)newptr, size);
-      //assert(GET_SIZE(newptr) >= size);
       return newptr;
     }
   } else if ((int) size - memAvail >= 0) {
@@ -162,7 +158,6 @@ void* my_malloc_get_mem(size_t size) {
     prevRequest = manPtr;
     prevRequestFree = 0;
     heapPtr = manPtr + size;
-    //assert(GET_SIZE(manPtr) >= size);
     return manPtr;
   } else {
     // use some of the available memory
@@ -188,18 +183,17 @@ void* my_malloc_get_mem(size_t size) {
 //  Always allocate a block whose size is a multiple of the alignment.
 // Precondition: No memory allocations larger than 2^20
 void* my_malloc(size_t size) {
+  //TODO(magendanz) more optimal with size as the storage size
+  size_t blockSize = size;
   // if size fits in a freelist, grab block
   int i = 0;
   while (i < MAX_LIST) {
     size_t headSize = HEAD_SIZE(i);
-    if (size <= headSize) {
+    if (blockSize <= headSize) {
       FreeNode* head = freeListHeads[i];
       if (head == NULL) {
+	//TODO(magendanz) break up larger block
         void* a = my_malloc_get_mem(headSize);
-	//assert(GET_SIZE(a) >= size);
-	if ((uint64_t)manPtr == 140737292685968){
-	  assert(manPtr != 0);
-	}
 	return a;
       }
       freeListHeads[i] = head->next;
