@@ -189,9 +189,6 @@ void* my_malloc_get_mem(size_t size) {
   }
 }
 
-//  malloc - Allocate a block by incrementing the brk pointer.
-//  Always allocate a block whose size is a multiple of the alignment.
-// Precondition: No memory allocations larger than 2^20
 void* my_malloc(size_t size) {
   //TODO(magendanz) more optimal with size as the storage size
   size_t blockSize = size;
@@ -208,7 +205,7 @@ void* my_malloc(size_t size) {
       }
       freeListHeads[i] = head->next;
       if (freeListHeads[i] != NULL) {
-	freeListHeads[i]->prev = NULL;
+        freeListHeads[i]->prev = NULL;
       }
       Header* header = GET_HEADER(head);
       header->free = 0;
@@ -237,7 +234,7 @@ void my_free(void* ptr) {
     size_t headSize = HEAD_SIZE(i);
     if (size <= headSize) {
       if (freeListHeads[i] != NULL) {
-	freeListHeads[i]->prev = newNode;
+        freeListHeads[i]->prev = newNode;
       }
       add_free_node(newNode, i);
       break;
@@ -279,7 +276,7 @@ void* my_realloc(void* ptr, size_t size) {
   
   // if current memory block fits the size change, do nothing
   // TODO(magendanz) not space efficient if size dramatically shrinking
-  if (size <= copy_size) {
+  if (size <= copy_size && size >= (copy_size/2)) {
     return ptr;
   }
   // if current memory block was most recently allocated, allocate extra 
