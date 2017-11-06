@@ -57,7 +57,7 @@ typedef struct FreeNode {
 #define HEADER_SIZE (ALIGN(sizeof(struct Header)))
 
 // Assumes no malloc larger than 2^20
-#define MAX_LIST 31
+#define MAX_LIST 33
 #define MIN_LIST 3
 #define THRESHOLD 256
 #define HEAD_SIZE(i) (size_t)((2 + (i & 1)) << (MIN_LIST + (i >> 1)))
@@ -170,7 +170,7 @@ void* my_malloc_get_mem(size_t size) {
     set_header(manPtr, size, header->prev, 0);
     prevRequest = manPtr;
     manInList = 0;
-    heapPtr = manPtr + size;
+    heapPtr = (void*)((char*)manPtr + size);
     return manPtr;
   } else {
     // use some of the available memory
@@ -293,7 +293,8 @@ void* my_realloc(void* ptr, size_t size) {
     v |= v >> 32;
     v++;
     mem_sbrk(v - copy_size);
-    header->size = v;
+    header->size = v; 
+    //printf("Realloc by expansion: %lu(ptr), %d(requested)\n", (uint64_t)manPtr, v);
     return ptr;
   }
 
