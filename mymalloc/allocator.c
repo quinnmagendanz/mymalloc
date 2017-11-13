@@ -33,16 +33,22 @@
 #define free(...) (USE_MY_FREE)
 #define realloc(...) (USE_MY_REALLOC)
 
-typedef struct Header {
+struct Header;
+typedef struct Header Header;
+
+struct Header {
   size_t size;
   void* prev;
   char free;
-} Header;
+};
 
-typedef struct FreeNode {
+struct FreeNode;
+typedef struct FreeNode FreeNode;
+
+struct FreeNode {
   struct FreeNode* next;
   struct FreeNode* prev;
-} FreeNode;
+};
 
 // All blocks must have a specified minimum alignment.
 // The alignment requirement (from config.h) is >= 8 bytes.
