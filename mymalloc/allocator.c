@@ -53,10 +53,22 @@ typedef struct FreeNode {
 // Rounds up to the nearest multiple of ALIGNMENT.
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 
-// The smallest aligned size that will hold a size_t value.
+// TODO(sophia): does this speed anything up?
+size_t headerSize = ALIGN(sizeof(struct Header));
+size_t freeNodeSize = ALIGN(sizeof(struct FreeNode));
+
+// The smallest aligned size that will hold a header value.
+// TODO(sophia): precompute this?
 #define HEADER_SIZE (ALIGN(sizeof(struct Header)))
 
+// The smalles aligned size that will hold a free node (aka smallest block size)
+// TODO(sophia): precompute this?
+#define FREENODE_SIZE (ALIGN(sizeof(struct FreeNode)))
+
+// Returns a pointer to the header of a block
 #define GET_HEADER(p) (Header*)((char*)p - HEADER_SIZE)
+
+#define THRESHOLD 512
 
 // p (uint64_t)((char*)manPtr - (((sizeof(size_t) + sizeof(uint64_t) + sizeof(char)) + (8-1)) & ~(8-1)) - sizeof(size_t))
 
@@ -66,9 +78,12 @@ void* heapPtr;
 void* manPtr;
 void* nextPtr;
 int memAvail;
+int acount;
+void* tracked;
 
 //16,24,32,48,64,96,128...
-FreeNode* freeListHead;
+FreeNode* smallFreeListHead;
+FreeNode* largeFreeListHead;
 
 // init - Initialize the malloc package.  Called once before any other
 // calls are made.  Since this is a very simple implementation, we just
@@ -80,187 +95,270 @@ int my_init() {
   manPtr = NULL;
   nextPtr = NULL;
   memAvail = 0;
-  freeListHead = NULL;
+  smallFreeListHead = NULL;
+  largeFreeListHead = NULL;
+  acount = 0;
+  tracked = NULL;
   return 0;
 }
 
-void remove_free_node(FreeNode* node) {
+void remove_free_node(FreeNode* node, size_t size) {
+  assert((GET_HEADER(node))->free == 1);
   //remove prevRequest from free list
-  if (node->next != NULL) {
+  if (node->next != NULL) { // node is not the last in free list
     node->next->prev = node->prev;
   }
-  if (node->prev != NULL) {
+  if (node->prev != NULL) { // node is not the first in free list
     node->prev->next = node->next;
+  } else { // node is the first in free list
+    if (size < THRESHOLD) {
+      smallFreeListHead = node->next;
+    } else {
+      largeFreeListHead = node->next;
+    }
+  }
+  (GET_HEADER(node))->free = 0;
+}
+
+void add_free_node(FreeNode* node, size_t size) {
+  // determine which free list to add the block to
+  FreeNode** freeList;
+  if (size < THRESHOLD) {
+    freeList = &smallFreeListHead;
   } else {
-    freeListHead = node->next;
+    freeList = &largeFreeListHead;
   }
-}
-
-void add_free_node(FreeNode* node) {
-  if (freeListHead != NULL) {
-    freeListHead->prev = node;
+  // add the block to the beginning of the free list
+  if (*freeList != NULL) {
+    (*freeList)->prev = node;
   }
-  node->next = freeListHead;
+  node->next = *freeList;
   node->prev = NULL;
-  freeListHead = node;
+  *freeList = node;
+  (GET_HEADER(node))->free = 1;
 }
 
-void set_header(void* p, size_t size, void* prevP, char free) {
+static inline void set_header(void* p, size_t size, void* prevP, char free) {
   Header* header = GET_HEADER(p);
-  header->size =  size;
-  header->prev =  prevP;
+  header->size = size;
+  header->prev = prevP;
   header->free = free;
 }
 
-void* my_malloc_get_mem(size_t size) {
-  // check how much memory we already have
-  if (memAvail <= 0) {
-    // no available memory; request entire memory block
-    int alignedSize = ALIGN(size + HEADER_SIZE);
-    void* p = mem_sbrk(alignedSize);
-    if (p == (void*) - 1) {
-      return NULL;
-    } else {
-      void* newPtr = (void*)((char*)p + HEADER_SIZE);
-      set_header(newPtr, size, manPtr, 0);
-      prevRequest = newPtr;
-      manPtr = prevRequest;
-      manInList = 0;
-      heapPtr = (void*)((char*)prevRequest + size);
-      printf("New Malloc: %lu(ptr), %d(requested)\n", (uint64_t)newPtr, size);
-      return newPtr;
-    }
-  } else if ((int) size - memAvail >= 0) {
-    // allocate enough space to complete block if worth it
-    void* p = mem_sbrk((int) size - memAvail);
-    printf("Heap Reuse: %lu(ptr), %d(requested), %d(available)\n", (uint64_t)manPtr, size, memAvail);
-    memAvail = 0;
-    if (p == (void*) - 1) {
-      return NULL;
-    }
-    Header* header = GET_HEADER(manPtr);
-    set_header(manPtr, size, header->prev, 0);
-    prevRequest = manPtr;
-    manInList = 0;
-    heapPtr = (void*)((char*)manPtr + size);
-    return manPtr;
-  } else {
-    // use some of the available memory
-    Header* header = GET_HEADER(manPtr);
-    set_header(manPtr, size, header->prev, 0);
-    printf("Heap Reuse: %lu(ptr), %d(requested), %d(available)\n", (uint64_t)manPtr, size, memAvail);
-    void* newPtr = manPtr;
-    void* newManPtr = (void*)((char*)manPtr + size + HEADER_SIZE);
-    memAvail = (uint64_t)heapPtr - (uint64_t)newManPtr;
-    manInList = 0;
-    if (memAvail > 0) {
-      manPtr = newManPtr;
-      set_header(manPtr, NULL, newPtr, 1);
-    }
-    return newPtr;
+static inline void set_header_size(void* p, size_t size) {
+  Header* header = GET_HEADER(p);
+  header->size = size;
+}
+
+static inline void set_header_prev(void* p, void* prevP) {
+  Header* header = GET_HEADER(p);
+  header->prev = prevP;
+}
+
+void split_free_block(FreeNode* ptr, size_t originalSize, size_t blockSize) {
+  // create a new header for the leftover block and add to a free list
+  size_t newSize = originalSize - blockSize - HEADER_SIZE;
+  assert(newSize >= FREENODE_SIZE);
+  void* newPtr = (void*)((char*)ptr + blockSize + HEADER_SIZE);        
+  set_header(newPtr, newSize, ptr, 1);
+  add_free_node(newPtr, newSize);
+  // update header with smaller block size
+  assert((char*)newPtr - (char*)ptr == blockSize + HEADER_SIZE);
+  assert(originalSize == blockSize + HEADER_SIZE + (GET_HEADER(newPtr))->size);
+  set_header_size(ptr, blockSize);
+  // update header of the next block on the heap (if exists) with proper prev pointer
+  void* nextPtr = (void*)((char*)newPtr + newSize + HEADER_SIZE);
+  if (nextPtr < my_heap_hi()) {
+    set_header_prev(nextPtr, newPtr);
+  }
+  // update prevRequest
+  if (ptr == prevRequest) {
+    prevRequest = newPtr;
   }
 }
 
-void* my_malloc(size_t size) {
-  //TODO(magendanz) more optimal with size as the storage size
-  size_t blockSize = ALIGN(size);
-  // if size fits in a freelist, grab block
+// search a single free list for a block that is at least blockSize large
+// TODO(sophia): short-circuit this search using max block sizes w/ maxPrev?
+static inline void* search_free_list(FreeNode* freeListHead, size_t blockSize) {
   for (FreeNode* curNode = freeListHead; curNode != NULL; curNode = curNode->next) {
     Header* header = GET_HEADER(curNode);
+    assert(header->free == 1);
     if (blockSize <= header->size) {
-      // enough leftovers to add new node
-      if (header->size >= sizeof(FreeNode) + blockSize + HEADER_SIZE) {
-	size_t newSize = header->size - blockSize - HEADER_SIZE;
-	void* newP = (char*)curNode + blockSize + HEADER_SIZE;
-	set_header(newP, newSize, curNode, 1);
-	set_header(curNode, blockSize, curNode->prev, 0);
-	add_free_node(newP);
-	printf("FreeNode Split: %lu(ptr), %lu(new)\n", (uint64_t)curNode, newP);
+      size_t original_size = header->size;
+      // block is large enough to split
+      // TODO(sophia): find a better heuristic for splitting
+      if ((header->size < 128 && header->size > 3*blockSize) || (header->size > 2*blockSize)) {
+        split_free_block(curNode, header->size, blockSize);
+        assert(header->size != original_size);
       }
-      printf("FreeNode Reuse: %lu(ptr), %d(size)\n", (uint64_t)curNode, blockSize);
-      remove_free_node(curNode);
+      // printf("FreeNode Reuse: %lu(ptr), %zu(size)\n", (uint64_t)curNode, blockSize);
+      remove_free_node(curNode, original_size);
+      assert(header->free == 0);
       return curNode;
     }
   }
-  return my_malloc_get_mem(blockSize);
+  return NULL;
+}
+
+// search the free lists for a block that is at least blockSize large
+static inline void* search_free_blocks(size_t blockSize) {
+  void* freePtr = NULL;
+  if (blockSize < THRESHOLD) {
+    freePtr = search_free_list(smallFreeListHead, blockSize);
+    if (freePtr != NULL) {
+      return freePtr;
+    }
+  }
+  freePtr = search_free_list(largeFreeListHead, blockSize);
+  return freePtr;
+}
+
+void* my_malloc(size_t size) {
+  acount += 1;
+
+  size_t blockSize = ALIGN(size);
+  if (blockSize <= FREENODE_SIZE) {
+    blockSize = FREENODE_SIZE;
+  }
+
+  // if size fits in a freelist, grab block
+  void* freePtr = search_free_blocks(blockSize);
+  if (freePtr != NULL) {
+    // Header* header = GET_HEADER(freePtr);
+    // assert(header->free == 0);
+    return freePtr;
+  }
+
+  // no block large enough in free list, request new heap memory
+  void* p = mem_sbrk(HEADER_SIZE + blockSize);
+  if (p == (void*) - 1) {
+    return NULL;
+  }
+  void* newPtr = (void*)((char*)p + HEADER_SIZE);
+  set_header(newPtr, blockSize, prevRequest, 0);
+  prevRequest = newPtr;
+
+  // Header* header = GET_HEADER(newPtr);
+  // assert(header->free == 0);
+  // printf("New Malloc: %lu(ptr), %zu(requested)\n", (uint64_t)newPtr, size);
+  return newPtr;
+}
+
+void coalesce_right(void* ptr) {
+  Header* header = GET_HEADER(ptr);
+  Header* rightHeader = (void*)((char*)ptr + header->size);
+  if ((void*)rightHeader < mem_heap_hi()) {
+    assert(rightHeader->prev == ptr);
+    if (rightHeader->free == 1) {
+      void* rightPtr = (void*)((char*)rightHeader + HEADER_SIZE);
+      remove_free_node(rightPtr, rightHeader->size);
+      assert(rightHeader->free == 0);
+      size_t newSize = header->size + HEADER_SIZE + rightHeader->size;
+      header->size = newSize;
+      // TODO(sophia): safety checks to see if falls off heap??? may not matter
+      Header* nextHeader = (Header*)((char*)rightPtr + rightHeader->size);
+      nextHeader->prev = ptr;
+      if (prevRequest == rightPtr) {
+        prevRequest = ptr;
+      }
+    }
+  }
+}
+
+void* coalesce_left(void* ptr) {
+  Header* header = GET_HEADER(ptr);
+  if (header->prev != NULL) { // ptr is not the first block on the heap
+    void* leftPtr = header->prev;
+    Header* leftHeader = GET_HEADER(leftPtr);
+
+    // if the previous block is free
+    if (leftHeader->free == 1) {
+      remove_free_node(leftPtr, leftHeader->size);
+      assert(leftHeader->free == 0);
+      size_t newSize = leftHeader->size + HEADER_SIZE + header->size;
+      leftHeader->size = newSize;
+      // TODO(sophia): safety checks?? does this matter? see coalesce_right
+      Header* nextHeader = (Header*)((char*)ptr + header->size);
+      nextHeader->prev = leftPtr;
+      if (prevRequest == ptr) {
+        prevRequest = leftPtr;
+      }
+      return leftPtr;
+    }
+  }
+  return ptr;
+}
+
+void* coalesce(void* ptr) {
+  coalesce_right(ptr);
+  void* freePtr = coalesce_left(ptr);
+  return freePtr;
+  // return ptr;
 }
 
 // free and add to free nodes
 void my_free(void* ptr) {
-  Header* header = GET_HEADER(ptr);
-  //printf("Free: %lu(ptr), %d(freed)\n", (uint64_t)ptr, header->size);
-  header->free = 1;
-  // stick into freelist
-  add_free_node(ptr);
-  if (ptr == manPtr) {
-    manInList = 1;
-  }
+  // printf("free %p\n", ptr);
+  // Header* header = GET_HEADER(ptr);
+  // assert(header->free == 0);
+  
+  // check if adjacent blocks are free
+  void* freePtr = coalesce(ptr);
+  Header* freeHeader = GET_HEADER(freePtr);
+  add_free_node(freePtr, freeHeader->size);
+  assert(freeHeader->free == 1);
 
-  // move manPtr to lowest free location on heap
-  Header* manHeader = GET_HEADER(manPtr);
-  if (manHeader->free && manHeader->prev != NULL) {
-    Header* subManHeader = GET_HEADER(manHeader->prev);
-    if (subManHeader->free) {
-      if (manPtr == prevRequest && manInList) {
-	remove_free_node(manPtr);
-	manInList = 0;
-      }
-      nextPtr = manHeader->prev;
-      Header* nextHeader = GET_HEADER(nextPtr);
-      while (nextPtr != NULL && nextHeader->free) {
-	remove_free_node(nextPtr);
-	manPtr = nextPtr;
-	nextPtr = nextHeader->prev;
-	nextHeader = GET_HEADER(nextPtr);
-      }
-      memAvail = (uint64_t)heapPtr - (uint64_t)manPtr;
-      //printf("New manPtr: %lu\n", (uint64_t)manPtr);
-    }
-  }
+  // add_free_node(ptr, header->size);
+  // assert(header->free == 1);
+}
+
+// round up to the next 2^n
+// TODO(sophia): we might not need this anymore?
+static inline size_t nearestPower2(size_t size) {
+  size_t v = size;
+  v--;
+  v |= v >> 1;
+  v |= v >> 2;
+  v |= v >> 4;
+  v |= v >> 8;
+  v |= v >> 16;
+  v |= v >> 32;
+  v++;
+  return v;
 }
 
 // realloc - Implemented simply in terms of malloc and free
 void* my_realloc(void* ptr, size_t size) {
-  void* newptr;
+  void* newPtr;
   Header* header = GET_HEADER(ptr);
-  size_t copy_size = header->size;
-  
+  size_t copySize = header->size;
+
   // if current memory block fits the size change, do nothing
   // TODO(magendanz) not space efficient if size dramatically shrinking
-  if (size <= copy_size && size >= (copy_size/2)) {
+  if (size <= copySize && size >= (copySize/2)) {
     return ptr;
   }
   // if current memory block was most recently allocated, allocate extra 
   // space needed and return same block
   if (ptr == prevRequest) {
-    size_t v = size;
-    // round up to next 2^n
-    v--;
-    v |= v >> 1;
-    v |= v >> 2;
-    v |= v >> 4;
-    v |= v >> 8;
-    v |= v >> 16;
-    v |= v >> 32;
-    v++;
-    mem_sbrk(v - copy_size);
-    header->size = v; 
-    //printf("Realloc by expansion: %lu(ptr), %d(requested)\n", (uint64_t)manPtr, v);
-    return ptr;
+    size_t blockSize = ALIGN(size);
+    if (blockSize > copySize) {
+      mem_sbrk(blockSize - copySize);
+      header->size = blockSize;
+      //printf("Realloc by expansion: %lu(ptr), %d(requested)\n", (uint64_t)manPtr, v);
+      return ptr;
+    }
   }
-
-  newptr = my_malloc(size);
-  if (NULL == newptr) {
-    return NULL;
+  // we have to find a free block or allocate new memory
+  newPtr = my_malloc(size);
+  if (newPtr != NULL) {
+    if (size < copySize) { //TODO(sophia): is this redundant??
+      copySize = size;
+    }
+    memcpy(newPtr, ptr, copySize);
+    my_free(ptr);
   }
-
-  if (size < copy_size) {
-    copy_size = size;
-  }
-  memcpy(newptr, ptr, copy_size);
-
-  my_free(ptr);
-  return newptr;
+  return newPtr;
 }
 
 int my_check_old();
@@ -305,84 +403,6 @@ int my_check() {
 
    return 0;
  }
-
-#define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
-
-// init - Initialize the malloc package.  Called once before any other
-// calls are made.  Since this is a very simple implementation, we just
-// return success.
-int my_init_old() {
-  return 0;
-}
-
-//  malloc - Allocate a block by incrementing the brk pointer.
-//  Always allocate a block whose size is a multiple of the alignment.
-void* my_malloc_old(size_t size) {
-  // We allocate a little bit of extra memory so that we can store the
-  // size of the block we've allocated.  Take a look at realloc to see
-  // one example of a place where this can come in handy.
-  int aligned_size = ALIGN(size + SIZE_T_SIZE);
-
-  // Expands the heap by the given number of bytes and returns a pointer to
-  // the newly-allocated area.  This is a slow call, so you will want to
-  // make sure you don't wind up calling it on every malloc.
-  void* p = mem_sbrk(aligned_size);
-
-  if (p == (void*) - 1) {
-    // Whoops, an error of some sort occurred.  We return NULL to let
-    // the client code know that we weren't able to allocate memory.
-    return NULL;
-  } else {
-    // We store the size of the block we've allocated in the first
-    // SIZE_T_SIZE bytes.
-    *(size_t*)p = size;
-
-    // Then, we return a pointer to the rest of the block of memory,
-    // which is at least size bytes long.  We have to cast to uint8_t
-    // before we try any pointer arithmetic because voids have no size
-    // and so the compiler doesn't know how far to move the pointer.
-    // Since a uint8_t is always one byte, adding SIZE_T_SIZE after
-    // casting advances the pointer by SIZE_T_SIZE bytes.
-    return (void*)((char*)p + SIZE_T_SIZE);
-  }
-}
-
-// free - Freeing a block does nothing.
-void my_free_old(void* ptr) {
-}
-
-// realloc - Implemented simply in terms of malloc and free
-void* my_realloc_old(void* ptr, size_t size) {
-  void* newptr;
-  size_t copy_size;
-
-  // Allocate a new chunk of memory, and fail if that allocation fails.
-  newptr = my_malloc(size);
-  if (NULL == newptr) {
-    return NULL;
-  }
-
-  // Get the size of the old block of memory.  Take a peek at my_malloc(),
-  // where we stashed this in the SIZE_T_SIZE bytes directly before the
-  // address we returned.  Now we can back up by that many bytes and read
-  // the size.
-  copy_size = *(size_t*)((uint8_t*)ptr - SIZE_T_SIZE);
-
-  // If the new block is smaller than the old one, we have to stop copying
-  // early so that we don't write off the end of the new block of memory.
-  if (size < copy_size) {
-    copy_size = size;
-  }
-
-  // This is a standard library call that performs a simple memory copy.
-  memcpy(newptr, ptr, copy_size);
-
-  // Release the old block.
-  my_free(ptr);
-
-  // Return a pointer to the new block.
-  return newptr;
-}
 
 // call mem_reset_brk.
 void my_reset_brk() {

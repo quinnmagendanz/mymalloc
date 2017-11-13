@@ -90,7 +90,7 @@ static int add_range(const malloc_impl_t *impl, range_t **ranges, char *lo,
   // The payload must lie within the extent of the heap
   if (lo < (char*) mem_heap_lo() || hi > (char*) mem_heap_hi()) {
     malloc_error(tracenum, opnum, "payload does not lie within extent of heap.");
-    printf("%d(lo), %d(hi), %d(mem_lo), %d(mem_hi)",(uint64_t)lo, (uint64_t)hi, (uint64_t)mem_heap_lo(), (uint64_t)mem_heap_hi());
+    printf("%lu(lo), %lu(hi), %lu(mem_lo), %lu(mem_hi)",(uint64_t)lo, (uint64_t)hi, (uint64_t)mem_heap_lo(), (uint64_t)mem_heap_hi());
     return 0;
   }
   
@@ -98,7 +98,7 @@ static int add_range(const malloc_impl_t *impl, range_t **ranges, char *lo,
   for(range_t *curr_range = *ranges; curr_range != NULL; curr_range = curr_range->next) {
     if (RANGES_INTERSECT(curr_range, lo, hi)) {
       snprintf(msg, MAXLINE, "added range from lo:%p to hi:%p intersects with"
-               "previous range from lo:%p to hi:%p.", 
+               " previous range from lo:%p to hi:%p.", 
                lo, hi, curr_range->lo, curr_range->hi);
       malloc_error(tracenum, opnum, msg);
       return 0;

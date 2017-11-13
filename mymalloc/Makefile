@@ -5,8 +5,8 @@ TARGETS := \
 LOCKER=/afs/csail.mit.edu/proj/courses/6.172
 CC := clang
 # You can add -Werr to clang to force all warnings to turn into errors
-CFLAGS := -std=gnu99 -g -Wall
-LDFLAGS := -lm
+CFLAGS := -std=gnu99 -g -Wall -flto
+LDFLAGS := -lm -flto
 # Macros defined by the user or OpenTuner
 PARAMS :=
 
