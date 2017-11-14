@@ -60,16 +60,16 @@ struct FreeNode {
 #define ALIGN(size) (((size) + (ALIGNMENT-1)) & ~(ALIGNMENT-1))
 
 // TODO(sophia): does this speed anything up?
-size_t headerSize = ALIGN(sizeof(struct Header));
-size_t freeNodeSize = ALIGN(sizeof(struct FreeNode));
+size_t headerSize = ALIGN(sizeof(Header));
+size_t freeNodeSize = ALIGN(sizeof(FreeNode));
 
 // The smallest aligned size that will hold a header value.
 // TODO(sophia): precompute this?
-#define HEADER_SIZE (ALIGN(sizeof(struct Header)))
+#define HEADER_SIZE (ALIGN(sizeof(Header)))
 
 // The smalles aligned size that will hold a free node (aka smallest block size)
 // TODO(sophia): precompute this?
-#define FREENODE_SIZE (ALIGN(sizeof(struct FreeNode)))
+#define FREENODE_SIZE (ALIGN(sizeof(FreeNode)))
 
 // Returns a pointer to the header of a block
 #define GET_HEADER(p) (Header*)((char*)p - HEADER_SIZE)
@@ -79,11 +79,6 @@ size_t freeNodeSize = ALIGN(sizeof(struct FreeNode));
 // p (uint64_t)((char*)manPtr - (((sizeof(size_t) + sizeof(uint64_t) + sizeof(char)) + (8-1)) & ~(8-1)) - sizeof(size_t))
 
 void* prevRequest;
-char manInList;
-void* heapPtr;
-void* manPtr;
-void* nextPtr;
-int memAvail;
 int acount;
 void* tracked;
 
@@ -96,11 +91,6 @@ FreeNode* largeFreeListHead;
 // return success.
 int my_init() {
   prevRequest = NULL;
-  manInList = 0;
-  heapPtr = NULL;
-  manPtr = NULL;
-  nextPtr = NULL;
-  memAvail = 0;
   smallFreeListHead = NULL;
   largeFreeListHead = NULL;
   acount = 0;
@@ -167,7 +157,11 @@ void split_free_block(FreeNode* ptr, size_t originalSize, size_t blockSize) {
   assert(newSize >= FREENODE_SIZE);
   void* newPtr = (void*)((char*)ptr + blockSize + HEADER_SIZE);        
   set_header(newPtr, newSize, ptr, 1);
-  add_free_node(newPtr, newSize);
+  if (ptr == prevRequest) {
+    prevRequest = newPtr;
+  } else {
+    add_free_node(newPtr, newSize);
+  }
   // update header with smaller block size
   assert((char*)newPtr - (char*)ptr == blockSize + HEADER_SIZE);
   assert(originalSize == blockSize + HEADER_SIZE + (GET_HEADER(newPtr))->size);
@@ -178,9 +172,6 @@ void split_free_block(FreeNode* ptr, size_t originalSize, size_t blockSize) {
     set_header_prev(nextPtr, newPtr);
   }
   // update prevRequest
-  if (ptr == prevRequest) {
-    prevRequest = newPtr;
-  }
 }
 
 // search a single free list for a block that is at least blockSize large
@@ -197,7 +188,7 @@ static inline void* search_free_list(FreeNode* freeListHead, size_t blockSize) {
         split_free_block(curNode, header->size, blockSize);
         assert(header->size != original_size);
       }
-      // printf("FreeNode Reuse: %lu(ptr), %zu(size)\n", (uint64_t)curNode, blockSize);
+      //printf("FreeNode Reuse: %p(ptr), %zu(size)\n", (char*)curNode, blockSize);
       remove_free_node(curNode, original_size);
       assert(header->free == 0);
       return curNode;
@@ -236,6 +227,24 @@ void* my_malloc(size_t size) {
   }
 
   // no block large enough in free list, request new heap memory
+  // use prevRequest if free
+  void* tempPrev = prevRequest;
+  Header* prevHead = GET_HEADER(tempPrev);
+  if (tempPrev != NULL && prevHead->free) {
+    if (blockSize > prevHead->size) {
+      void* p = mem_sbrk(blockSize - prevHead->size);
+      if (p == (void*) - 1) {
+	return NULL;
+      }
+      prevHead->size = blockSize;
+    } else if (blockSize + HEADER_SIZE < prevHead->size) {
+      split_free_block(tempPrev, prevHead->size, blockSize);
+    }
+    prevHead->free = 0;
+    //printf("PrevRequest use %p(prevRequest), %d(size)\n", (char*)prevRequest, blockSize);
+    return tempPrev;
+  }
+
   void* p = mem_sbrk(HEADER_SIZE + blockSize);
   if (p == (void*) - 1) {
     return NULL;
@@ -246,7 +255,7 @@ void* my_malloc(size_t size) {
 
   // Header* header = GET_HEADER(newPtr);
   // assert(header->free == 0);
-  // printf("New Malloc: %lu(ptr), %zu(requested)\n", (uint64_t)newPtr, size);
+  //printf("New Malloc: %p(ptr), %zu(requested)\n", (char*)newPtr, size);
   return newPtr;
 }
 
@@ -257,8 +266,10 @@ void coalesce_right(void* ptr) {
     assert(rightHeader->prev == ptr);
     if (rightHeader->free == 1) {
       void* rightPtr = (void*)((char*)rightHeader + HEADER_SIZE);
-      remove_free_node(rightPtr, rightHeader->size);
-      assert(rightHeader->free == 0);
+      if (rightPtr != prevRequest) {
+	remove_free_node(rightPtr, rightHeader->size);
+	assert(rightHeader->free == 0);
+      }
       size_t newSize = header->size + HEADER_SIZE + rightHeader->size;
       header->size = newSize;
       // TODO(sophia): safety checks to see if falls off heap??? may not matter
@@ -310,9 +321,13 @@ void my_free(void* ptr) {
   
   // check if adjacent blocks are free
   void* freePtr = coalesce(ptr);
-  Header* freeHeader = GET_HEADER(freePtr);
-  add_free_node(freePtr, freeHeader->size);
-  assert(freeHeader->free == 1);
+  if (freePtr != prevRequest) {
+      Header* freeHeader = GET_HEADER(freePtr);
+      add_free_node(freePtr, freeHeader->size);
+      assert(freeHeader->free == 1);
+  } else {
+    (GET_HEADER(freePtr))->free = 1;
+  }
 
   // add_free_node(ptr, header->size);
   // assert(header->free == 1);
