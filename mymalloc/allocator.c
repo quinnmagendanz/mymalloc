@@ -184,7 +184,7 @@ static inline void* search_free_list(FreeNode* freeListHead, size_t blockSize) {
       size_t original_size = header->size;
       // block is large enough to split
       // TODO(sophia): find a better heuristic for splitting
-      if ((header->size < 128 && header->size > 3*blockSize) || (header->size > 2*blockSize)) {
+      if ((blockSize + HEADER_SIZE + FREENODE_SIZE <= header->size) && ((header->size < 128 && header->size > 3*blockSize) || (header->size > 2*blockSize))) {
         split_free_block(curNode, header->size, blockSize);
         assert(header->size != original_size);
       }
